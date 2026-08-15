@@ -524,7 +524,7 @@ func StartListener(ctx context.Context, db *gorm.DB, p *NWCParams, user NWCUser,
 
 	events := pool.SubMany(ctx, []string{user.Relay}, filters)
 
-	var incoming nostr.IncomingEvent
+	var incoming nostr.RelayEvent
 
 	for {
 
