@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 	"github.com/dustin/go-humanize"
 	"github.com/fiatjaf/makeinvoice"
 	nwc "github.com/braydonf/go-nwc"
@@ -247,12 +247,14 @@ func main() {
 		userMap[user.Name] = user
 	}
 
-	pubkey, err := nostr.GetPublicKey(s.NostrPrivateKey)
+	privkey, err := nostr.SecretKeyFromHex(s.NostrPrivateKey)
 	if err != nil {
-		log.Fatal().Err(err).Msg("unable to get pubkey")
+		log.Fatal().Err(err).Msg("unable to get privkey")
 	}
 
-	log.Info().Str("pubkey", pubkey).Msg("starting nostr with pubkey")
+	pubkey := nostr.GetPublicKey(privkey)
+
+	log.Info().Str("pubkey", pubkey.Hex()).Msg("starting nostr with pubkey")
 
 	// Setup NWC daemon.
 
@@ -268,21 +270,23 @@ func main() {
 
 		nwcParams := nwc.NWCParams {
 			PrivateKey: s.NostrPrivateKey,
-			PublicKey: pubkey,
+			PublicKey: pubkey.Hex(),
 			Users: make([]nwc.NWCUser, len(s.Users)),
 			Logger: &log,
 			DBPath: dbpath,
 		}
 
 		for i, user := range s.Users {
-			pk, err := nostr.GetPublicKey(user.NWCSecret)
+			privkey, err := nostr.SecretKeyFromHex(user.NWCSecret)
 			if err != nil {
-				log.Fatal().Err(err).Msg("unable to get nwc pubkey")
+				log.Fatal().Err(err).Msg("unable to get user secret")
 			}
+
+			pubkey := nostr.GetPublicKey(privkey)
 
 			nwcParams.Users[i].Name = user.Name
 			nwcParams.Users[i].NWCSecret = user.NWCSecret
-			nwcParams.Users[i].NWCPubKey = pk
+			nwcParams.Users[i].NWCPubKey = pubkey.Hex()
 			nwcParams.Users[i].Relay = user.NWCRelay
 			nwcParams.Users[i].Kind = user.Kind
 			nwcParams.Users[i].Key = user.Key

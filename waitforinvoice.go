@@ -247,9 +247,14 @@ func WaitForInvoicePaid(payvalues LNURLPayValuesCustom, params *UserParams) {
 					var amount = bolt11.MSatoshi / 1000
 
 					if payvalues.Nip57Receipt.Tags != nil {
-						var descriptionTag = *payvalues.Nip57Receipt.Tags.GetFirst([]string{"description"})
+						var descriptionTag = payvalues.Nip57Receipt.Tags.Find("description")
 
-						if bolt11.DescriptionHash == Nip57DescriptionHash(descriptionTag.Value()) {
+						if descriptionTag == nil {
+							log.Warn().Msg("Receipt missing description tag")
+							close(quit)
+						}
+
+						if bolt11.DescriptionHash == Nip57DescriptionHash(descriptionTag[1]) {
 							publishNostrEvent(payvalues.Nip57Receipt, payvalues.Nip57ReceiptRelays)
 							var satsr = "Sats"
 							if amount == 1 {

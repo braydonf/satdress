@@ -18,9 +18,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip04"
-	"github.com/nbd-wtf/go-nostr/nip19"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip04"
+	"fiatjaf.com/nostr/nip19"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/nfnt/resize"
 )
 
@@ -84,28 +85,20 @@ func DecodeBech32(key string) string {
 		return v.(string)
 	}
 	return key
-
 }
 
-func EncodeBech32Public(key string) string {
-	if v, err := nip19.EncodePublicKey(key); err == nil {
-		return v
+func EncodeBech32Note(id string) (string, error) {
+	b, err := hex.DecodeString(id)
+	if err != nil {
+		return "", err
 	}
-	return key
-}
 
-func EncodeBech32Private(key string) string {
-	if v, err := nip19.EncodePrivateKey(key); err == nil {
-		return v
+	bits5, err := bech32.ConvertBits(b, 8, 5, true)
+	if err != nil {
+		return "", err
 	}
-	return key
-}
 
-func EncodeBech32Note(key string) string {
-	if v, err := nip19.EncodeNote(key); err == nil {
-		return v
-	}
-	return key
+	return bech32.Encode("note", bits5)
 }
 
 func sendMessage(receiverKey string, message string) {
@@ -113,21 +106,25 @@ func sendMessage(receiverKey string, message string) {
 	var relays []string
 	var tags nostr.Tags
 	reckey := DecodeBech32(receiverKey)
-	tags = append(tags, nostr.Tag{"p", reckey})
 
-	//references, err := optSlice(opts, "--reference")
-	//if err != nil {
-	//	return
-	//}
-	//for _, ref := range references {
-	//tags = append(tags, nostr.Tag{"e", reckey})
-	//}
+	recpubkey, err := nostr.PubKeyFromHex(reckey)
+	if err != nil {
+		log.Printf("Error parsing receiverKey: %s. x\n", err.Error())
+		return
+	}
+
+	tags = append(tags, nostr.Tag{"p", reckey})
 
 	// parse and encrypt content
 	privkeyhex := DecodeBech32(s.NostrPrivateKey)
-	pubkey, _ := nostr.GetPublicKey(privkeyhex)
+	privkey, err := nostr.SecretKeyFromHex(privkeyhex)
+	if err != nil {
+		log.Printf("Error parsing privkey: %s. x\n", err.Error())
+		return
+	}
+	pubkey := nostr.GetPublicKey(privkey)
 
-	sharedSecret, err := nip04.ComputeSharedSecret(reckey, privkeyhex)
+	sharedSecret, err := nip04.ComputeSharedSecret(recpubkey, privkey)
 	if err != nil {
 		log.Printf("Error computing shared key: %s. x\n", err.Error())
 		return
@@ -146,74 +143,9 @@ func sendMessage(receiverKey string, message string) {
 		Tags:      tags,
 		Content:   encryptedMessage,
 	}
-	event.Sign(privkeyhex)
+	event.Sign(privkey)
 	publishNostrEvent(event, relays)
 	log.Printf("%+v\n", event)
-}
-
-func GetNostrProfileMetaData(npub string, index int) (ProfileMetadata, error) {
-	var metadata *ProfileMetadata
-	// Prepend special purpose relay wss://purplepag.es to the list of relays
-	var relays = append([]string{"wss://purplepag.es"}, Relays...)
-
-	for index < len(relays) {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		rel := relays[index]
-		log.Printf("Get Image from: %s", rel)
-		url := rel
-		relay, err := nostr.RelayConnect(ctx, url)
-		if err != nil {
-			log.Printf("Could not connect to [%s], trying next relay", url)
-			index++
-			continue
-		}
-
-		var filters nostr.Filters
-		if _, v, err := nip19.Decode(npub); err == nil {
-			t := make(map[string][]string)
-			t["p"] = []string{v.(string)}
-			filters = []nostr.Filter{{
-				Authors: []string{v.(string)},
-				Kinds:   []int{0},
-				Limit:   1,
-			}}
-		} else {
-			log.Printf("Could not find Profile, trying next relay")
-			index++
-			relay.Close()
-			continue
-		}
-		sub, err := relay.Subscribe(ctx, filters)
-		evs := make([]nostr.Event, 0)
-
-		endStoredEventsOnce := new(sync.Once)
-		go func() {
-			endStoredEventsOnce.Do(func() {
-				<-sub.EndOfStoredEvents
-			})
-		}()
-
-		for ev := range sub.Events {
-			evs = append(evs, *ev)
-		}
-		relay.Close()
-
-		if len(evs) > 0 {
-			metadata, err = ParseMetadata(evs[0])
-			log.Printf("Success getting Nostr Profile")
-			break
-		} else {
-			err = fmt.Errorf("no profile found for npub %s on relay %s", npub, url)
-			log.Printf("Could not find Profile, trying next relay")
-			index++
-		}
-	}
-
-	if metadata == nil {
-		return ProfileMetadata{}, fmt.Errorf("Couldn't download Profile for given relays")
-	}
-	return *metadata, nil
 }
 
 // Reusable instance of http client
@@ -292,7 +224,14 @@ func publishNostrEvent(ev nostr.Event, relays []string) {
 	// Add more relays, remove trailing slashes, and ensure unique relays
 	relays = uniqueSlice(cleanUrls(append(relays, Relays...)))
 
-	ev.Sign(s.NostrPrivateKey)
+	privkeyhex := DecodeBech32(s.NostrPrivateKey)
+	privkey, err := nostr.SecretKeyFromHex(privkeyhex)
+	if err != nil {
+		log.Printf("Error parsing privkey: %s \n", err.Error())
+		return
+	}
+
+	ev.Sign(privkey)
 
 	var wg sync.WaitGroup
 	wg.Add(len(relays))
@@ -318,7 +257,8 @@ func publishNostrEvent(ev nostr.Event, relays []string) {
 			for i := 0; i < maxRetries; i++ {
 				// Set a timeout for connecting to the relay
 				connCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				conn, err = nostr.RelayConnect(connCtx, url)
+				options := nostr.RelayOptions{}
+				conn, err = nostr.RelayConnect(connCtx, url, options)
 				cancel()
 
 				if err != nil {
@@ -351,48 +291,52 @@ func publishNostrEvent(ev nostr.Event, relays []string) {
 }
 
 func ExtractNostrRelays(zapEvent nostr.Event) []string {
-	relaysTag := zapEvent.Tags.GetFirst([]string{"relays"})
+	relaysTag := zapEvent.Tags.Find("relays")
 	log.Printf("Zap relaysTag: %s", relaysTag)
 
-	if relaysTag == nil || len(*relaysTag) == 0 {
+	if relaysTag == nil {
 		return []string{}
 	}
 
 	// Skip the first element, which is the tag name
-	relays := (*relaysTag)[1:]
+	relays := relaysTag[1:]
 	log.Printf("Zap relays: %v", relays)
 
 	return relays
 }
 
 func CreateNostrReceipt(zapEvent nostr.Event, invoice string) (nostr.Event, error) {
-	pub, err := nostr.GetPublicKey(nostrPrivkeyHex)
+	privkey, err := nostr.SecretKeyFromHex(nostrPrivkeyHex)
 	if err != nil {
+		log.Error().Err(err).Str("Couldn't parse privkey: ", err.Error())
 		return nostr.Event{}, err
 	}
+	pub := nostr.GetPublicKey(privkey)
 
 	zapEventSerialized, err := json.Marshal(zapEvent)
 	if err != nil {
 		return nostr.Event{}, err
 	}
 
+	ptag := zapEvent.Tags.Find("p")
+
 	nip57Receipt := nostr.Event{
 		PubKey:    pub,
 		CreatedAt: nostr.Now(),
 		Kind:      9735,
 		Tags: nostr.Tags{
-			*zapEvent.Tags.GetFirst([]string{"p"}),
-			[]string{"P", zapEvent.PubKey},
+			ptag,
+			[]string{"P", zapEvent.PubKey.Hex()},
 			[]string{"bolt11", invoice},
 			[]string{"description", string(zapEventSerialized)},
 		},
 	}
 
-	if eTag := zapEvent.Tags.GetFirst([]string{"e"}); eTag != nil {
-		nip57Receipt.Tags = nip57Receipt.Tags.AppendUnique(*eTag)
+	if eTag := zapEvent.Tags.Find("e"); eTag != nil {
+		nip57Receipt.Tags = append(nip57Receipt.Tags, eTag)
 	}
 
-	err = nip57Receipt.Sign(nostrPrivkeyHex)
+	err = nip57Receipt.Sign(privkey)
 	if err != nil {
 		return nostr.Event{}, err
 	}

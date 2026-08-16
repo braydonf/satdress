@@ -9,7 +9,8 @@ import (
 
 	"github.com/fiatjaf/go-lnurl"
 	"github.com/gorilla/mux"
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
 	decodepay "github.com/nbd-wtf/ln-decodepay"
 )
 
@@ -92,9 +93,13 @@ func handleLNURL(w http.ResponseWriter, r *http.Request) {
 			//This can be any private key, not necessarily from the user.
 			nostrPrivkeyHex = DecodeBech32(s.NostrPrivateKey)
 			allowNostr = true
-			pk := nostrPrivkeyHex
-			pub, _ := nostr.GetPublicKey(pk)
-			nostrPubkey = pub
+			privkey, err := nostr.SecretKeyFromHex(nostrPrivkeyHex)
+			if err != nil {
+				log.Error().Err(err).Str("Couldn't parse privkey: ", err.Error())
+			} else {
+				pub := nostr.GetPublicKey(privkey)
+				nostrPubkey = pub.Hex()
+			}
 		}
 
 		json.NewEncoder(w).Encode(LNURLPayParamsCustom{
@@ -131,12 +136,12 @@ func handleLNURL(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				log.Error().Err(err).Str("Couldn't parse nostr event: ", err.Error())
 			} else {
-				valid, err := zapEvent.CheckSignature()
-				if !valid || err != nil {
-					log.Error().Err(err).Str("Nostr NIP-57 zap event signature invalid: ", err.Error())
+				valid := zapEvent.VerifySignature()
+				if !valid {
+					log.Warn().Msg("Nostr NIP-57 zap event signature invalid")
 					return
 				}
-				if len(zapEvent.Tags) == 0 || zapEvent.Tags.GetFirst([]string{"p"}) == nil {
+				if !zapEvent.Tags.Has("p") {
 					log.Error().Err(err).Str("Nostr NIP-57 zap event validation error ", "")
 					return
 				}
@@ -207,7 +212,7 @@ func serveLNURLpSecond(w http.ResponseWriter, params *UserParams, username strin
 
 	// NIP57 ZAPs
 	// for nip57 use the nostr event as the descriptionHash
-	if zapEvent.Sig != "" {
+	if len(zapEvent.Sig) > 0 {
 
 		// we calculate the descriptionHash here, create an invoice with it
 		// and store the invoice in the zap receipt later down the line
@@ -246,17 +251,28 @@ func serveLNURLpSecond(w http.ResponseWriter, params *UserParams, username strin
 	var sender = ""
 	var note = ""
 	// nip57 - we need to store the newly created invoice in the zap receipt
-	if zapEvent.Sig != "" {
-		// TODO: Handle the err
+	if len(zapEvent.Sig) > 0 {
 		nip57Receipt, err = CreateNostrReceipt(zapEvent, invoice)
-		sender = "@" + EncodeBech32Public(zapEvent.PubKey)
-		if zapEvent.Tags.GetFirst([]string{"e"}) != nil {
-			note = "@" + EncodeBech32Note(zapEvent.Tags.GetFirst([]string{"e"}).Value())
-		}
-		if zapEvent.Tags.GetFirst([]string{"anon"}) != nil {
-			if zapEvent.Tags.GetFirst([]string{"anon"}).Value() == "" {
-				sender = "anonymous Zapper 🤙"
+		if err != nil {
+			response = LNURLPayValuesCustom{
+				LNURLResponse: lnurl.LNURLResponse{
+					Status: "Error",
+					Reason: "Couldn't create receipt."},
 			}
+			return response, err
+		}
+		sender = "@" + nip19.EncodeNpub(zapEvent.PubKey)
+		etag := zapEvent.Tags.Find("e")
+		if etag != nil {
+			notebech32, err := EncodeBech32Note(etag[1])
+			if err != nil {
+				note = etag[1]
+			} else {
+				note = "@" + notebech32
+			}
+		}
+		if zapEvent.Tags.Find("e") == nil {
+			sender = "anonymous Zapper 🤙"
 		}
 		log.Debug().Str("Zap from", sender).Msg("Nostr")
 	}
