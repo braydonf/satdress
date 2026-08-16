@@ -277,16 +277,16 @@ func main() {
 		}
 
 		for i, user := range s.Users {
-			privkey, err := nostr.SecretKeyFromHex(user.NWCSecret)
+			nwcPrivkey, err := nostr.SecretKeyFromHex(user.NWCSecret)
 			if err != nil {
 				log.Fatal().Err(err).Msg("unable to get user secret")
 			}
 
-			pubkey := nostr.GetPublicKey(privkey)
+			nwcPubkey := nostr.GetPublicKey(nwcPrivkey)
 
 			nwcParams.Users[i].Name = user.Name
 			nwcParams.Users[i].NWCSecret = user.NWCSecret
-			nwcParams.Users[i].NWCPubKey = pubkey.Hex()
+			nwcParams.Users[i].NWCPubKey = nwcPubkey.Hex()
 			nwcParams.Users[i].Relay = user.NWCRelay
 			nwcParams.Users[i].Kind = user.Kind
 			nwcParams.Users[i].Key = user.Key

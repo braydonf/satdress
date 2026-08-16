@@ -224,7 +224,7 @@ func InitDB(db *gorm.DB, p *NWCParams) {
 
 func CommitResponseEvent(db *gorm.DB, p *NWCParams, user *NWCUser, response *nostr.Event, requestNostrId string) (*ResponseEvent, error) {
 	re := &ResponseEvent{
-		NostrId: response.ID.String(),
+		NostrId: response.ID.Hex(),
 		Raw: response.String(),
 		RequestNostrId: requestNostrId,
 		PubKey: response.PubKey.Hex(),
@@ -394,15 +394,15 @@ func ExecuteRequest(ctx context.Context, db *gorm.DB, p *NWCParams, user *NWCUse
 	return CommitResponseEvent(db, p, user, nostrResp, request.NostrId)
 }
 
-func HandleEvent(db *gorm.DB, p *NWCParams, user *NWCUser, event *nostr.Event) (*RequestEvent, *Nip47Error) {
-	p.Logger.Info().Str("user", user.Name).Str("event_id", event.ID.String()).Msg("handling event")
+func HandleEvent(db *gorm.DB, p *NWCParams, user *NWCUser, event nostr.Event) (*RequestEvent, *Nip47Error) {
+	p.Logger.Info().Str("user", user.Name).Str("event_id", event.ID.Hex()).Msg("handling event")
 
 	requestEvent := RequestEvent{}
 
-	findEventResult := db.Table("request_events").Where("nostr_id = ?", event.ID).Find(&requestEvent)
+	findEventResult := db.Table("request_events").Where("nostr_id = ?", event.ID.Hex()).Find(&requestEvent)
 
 	if findEventResult.RowsAffected != 0 {
-		p.Logger.Warn().Str("nostr_id", event.ID.String()).Msg("event already processed")
+		p.Logger.Warn().Str("nostr_id", event.ID.Hex()).Msg("event already processed")
 		return nil, nil
 	}
 
@@ -423,7 +423,7 @@ func HandleEvent(db *gorm.DB, p *NWCParams, user *NWCUser, event *nostr.Event) (
 	}
 
 	revent := RequestEvent {
-		NostrId: event.ID.String(),
+		NostrId: event.ID.Hex(),
 		PubKey: event.PubKey.Hex(),
 		User: user.Name,
 		Raw: event.String(),
@@ -431,7 +431,7 @@ func HandleEvent(db *gorm.DB, p *NWCParams, user *NWCUser, event *nostr.Event) (
 	}
 
 	if err := db.Table("request_events").Create(&revent).Error; err != nil {
-		p.Logger.Warn().Err(err).Str("node_id", event.ID.String()).Msg("could not save event")
+		p.Logger.Warn().Err(err).Str("node_id", event.ID.Hex()).Msg("could not save event")
 
 		return nil, &Nip47Error{
 			Code: NIP47_ERROR_INTERNAL,
@@ -439,7 +439,7 @@ func HandleEvent(db *gorm.DB, p *NWCParams, user *NWCUser, event *nostr.Event) (
 		}
 	}
 
-	p.Logger.Info().Str("user", user.Name).Str("event_id", event.ID.String()).Msg("ended event")
+	p.Logger.Info().Str("user", user.Name).Str("event_id", event.ID.Hex()).Msg("ended event")
 
 	return &revent, nil
 }
@@ -570,13 +570,13 @@ func PublishNip47Info(ctx context.Context, p *NWCParams, relay *nostr.Relay) {
 		return
 	}
 
-	p.Logger.Info().Str("event_id", ev.ID.String()).Msg("published info event")
+	p.Logger.Info().Str("event_id", ev.ID.Hex()).Msg("published info event")
 }
 
 func StartListener(ctx context.Context, db *gorm.DB, p *NWCParams, user NWCUser, pool *nostr.Pool, requests chan<- RequestEvent, responses chan<- ResponseEvent) {
 	p.Logger.Info().Str("user", user.Name).Msg("start event worker")
 
-	pubkey, err := nostr.PubKeyFromHex(p.PublicKey)
+	pubkey, err := nostr.PubKeyFromHex(user.NWCPubKey)
 	if err != nil {
 		p.Logger.Warn().Err(err).Msg("malformed pubkey")
 		return
@@ -590,23 +590,14 @@ func StartListener(ctx context.Context, db *gorm.DB, p *NWCParams, user NWCUser,
 
 	options := nostr.SubscriptionOptions{}
 
-	events := pool.SubscribeMany(ctx, []string{user.Relay}, filter, options)
+	events, eosed := pool.SubscribeManyNotifyEOSE(ctx, []string{user.Relay}, filter, options)
 
-	var incoming nostr.RelayEvent
+	p.Logger.Info().Str("user", user.Name).Str("relay", user.Relay).Str("pubkey", pubkey.Hex()).Msg("waiting for events")
 
-	for {
+	for evt := range events {
+		p.Logger.Info().Str("user", user.Name).Str("event_id", evt.ID.Hex()).Msg("received event")
 
-		p.Logger.Info().Str("user", user.Name).Msg("waiting for events")
-
-		incoming = <- events
-
-		evt := &incoming.Event
-
-		if evt == nil {
-			break
-		}
-
-		revent, nip47err := HandleEvent(db, p, &user, evt)
+		revent, nip47err := HandleEvent(db, p, &user, evt.Event)
 
 		if revent != nil && nip47err == nil {
 
@@ -622,12 +613,12 @@ func StartListener(ctx context.Context, db *gorm.DB, p *NWCParams, user NWCUser,
 			ss, err := nip04.ComputeSharedSecret(evt.PubKey, privkey)
 
 			if ss != nil {
-				response, err := CreateNostrResponse(p, evt.PubKey.Hex(), evt.ID.String(), Nip47Response{
+				response, err := CreateNostrResponse(p, evt.PubKey.Hex(), evt.ID.Hex(), Nip47Response{
 					Error: nip47err,
 				}, nil, ss)
 
 				if response != nil {
-					rsp, _ := CommitResponseEvent(db, p, &user, response, evt.ID.String())
+					rsp, _ := CommitResponseEvent(db, p, &user, response, evt.ID.Hex())
 					if rsp != nil {
 						responses <- *rsp
 					}
@@ -639,8 +630,14 @@ func StartListener(ctx context.Context, db *gorm.DB, p *NWCParams, user NWCUser,
 			}
 		}
 
-		p.Logger.Info().Str("user", user.Name).Str("event_id", evt.ID.String()).Msg("finished event")
+		p.Logger.Info().Str("user", user.Name).Str("event_id", evt.ID.Hex()).Msg("finished event")
 	}
+
+	p.Logger.Info().Str("user", user.Name).Msg("waiting eosed")
+
+	<-eosed
+
+	p.Logger.Info().Str("user", user.Name).Msg("end of listener")
 }
 
 func ExecuteRequestBacklog(ctx context.Context, db *gorm.DB, p *NWCParams, user NWCUser, responses chan<- ResponseEvent) {
@@ -743,7 +740,7 @@ func Start(ctx context.Context, p *NWCParams) {
 			if info.Content != NIP47_CAPABILITIES {
 				PublishNip47Info(ctx, p, relay)
 			} else {
-				p.Logger.Info().Str("info", info.ID.String()).Msg("received info from relay")
+				p.Logger.Info().Str("info", info.ID.Hex()).Msg("received info from relay")
 			}
 		} else {
 			PublishNip47Info(ctx, p, relay)
