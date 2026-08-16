@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"github.com/puzpuzpuz/xsync/v3"
 )
 
 const (
@@ -703,16 +704,25 @@ func Start(ctx context.Context, p *NWCParams) {
 	p.Logger.Info().Str("dbpath", p.DBPath).Msg("using database file")
 
 	db, err := gorm.Open(sqlite.Open(p.DBPath), &gorm.Config{})
-
-	//defer db.Close()
-
 	if err != nil {
 		p.Logger.Fatal().Err(err).Msg("error loading database")
 	}
 
+	defer func() {
+		sqldb, err := db.DB()
+		if err != nil {
+			p.Logger.Fatal().Err(err).Msg("error getting underlying db")
+		}
+		sqldb.Close()
+	}()
+
 	InitDB(db, p)
 
-	pool := nostr.NewPool()
+	pctx, _ := context.WithCancelCause(ctx)
+	pool := &nostr.Pool{
+		Relays: xsync.NewMapOf[string, *nostr.Relay](),
+		Context: pctx,
+	}
 
 	for _, user := range p.Users {
 
@@ -725,7 +735,8 @@ func Start(ctx context.Context, p *NWCParams) {
 
 		options := nostr.RelayOptions{}
 
-		relay, err := nostr.RelayConnect(ctx, user.Relay, options)
+		relay := nostr.NewRelay(ctx, user.Relay, options)
+		err := relay.Connect(ctx)
 
 		if err != nil {
 			p.Logger.Fatal().Err(err).Str("relay", user.Relay).Msg("could not connect")
