@@ -12,7 +12,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
-	"github.com/puzpuzpuz/xsync/v3"
 )
 
 const (
@@ -395,7 +394,53 @@ func ExecuteRequest(ctx context.Context, db *gorm.DB, p *NWCParams, user *NWCUse
 	return CommitResponseEvent(db, p, user, nostrResp, request.NostrId)
 }
 
-func HandleEvent(db *gorm.DB, p *NWCParams, user *NWCUser, event nostr.Event) (*RequestEvent, *Nip47Error) {
+func QueueEvent(db *gorm.DB,
+	p *NWCParams,
+	user *NWCUser,
+	evt *nostr.Event,
+	requests chan<- RequestEvent,
+	responses chan<- ResponseEvent) {
+
+	p.Logger.Info().Str("user", user.Name).Str("event_id", evt.ID.Hex()).Msg("received event")
+
+	revent, nip47err := HandleEvent(db, p, user, evt)
+
+	if revent != nil && nip47err == nil {
+
+		requests <- *revent
+
+	} else if (nip47err != nil) {
+		privkey, err := nostr.SecretKeyFromHex(p.PrivateKey)
+		if err != nil {
+			p.Logger.Fatal().Err(err).Msg("malformed privkey")
+		}
+
+		ss, err := nip04.ComputeSharedSecret(evt.PubKey, privkey)
+
+		if ss != nil {
+			response, err := CreateNostrResponse(p, evt.PubKey.Hex(), evt.ID.Hex(), Nip47Response{
+				Error: nip47err,
+			}, nil, ss)
+
+			if response != nil {
+				rsp, _ := CommitResponseEvent(db, p, user, response, evt.ID.Hex())
+				if rsp != nil {
+					responses <- *rsp
+				}
+			} else if err != nil {
+				p.Logger.Warn().Err(err).Msg("unable to create nostr response")
+			}
+		} else if err != nil {
+			p.Logger.Fatal().Err(err).Msg("oops")
+			p.Logger.Warn().Err(err).Msg("unable to compute shared secret")
+		}
+	}
+
+	p.Logger.Info().Str("user", user.Name).Str("event_id", evt.ID.Hex()).Msg("finished event")
+}
+
+func HandleEvent(db *gorm.DB,p *NWCParams, user *NWCUser, event *nostr.Event) (*RequestEvent, *Nip47Error) {
+
 	p.Logger.Info().Str("user", user.Name).Str("event_id", event.ID.Hex()).Msg("handling event")
 
 	requestEvent := RequestEvent{}
@@ -496,33 +541,6 @@ func PublishResponseEvent(ctx context.Context, p *NWCParams, db *gorm.DB, relay 
 		return err
 	}
 
-	if !relay.IsConnected() {
-		interval := 3 * time.Second
-
-		for {
-			p.Logger.Warn().Str("relay_url", relay.URL).Msg("relay is disconnected, attempting to reconnect")
-
-			options := nostr.RelayOptions{}
-
-			r := nostr.NewRelay(context.Background(), relay.URL, options)
-
-			p.Logger.Info().Str("relay_url", relay.URL).Msg("connecting...")
-
-			err := r.Connect(ctx)
-
-			if err != nil {
-				p.Logger.Warn().Err(err).Int("interval", int(interval)).Msg("unable to connect")
-			} else {
-				p.Logger.Info().Str("relay_url", relay.URL).Msg("connected")
-				*relay = *r
-				break
-			}
-
-			time.Sleep(interval)
-			interval = interval * 17 / 10
-		}
-	}
-
 	err = relay.Publish(ctx, event)
 
 	if err != nil {
@@ -574,13 +592,12 @@ func PublishNip47Info(ctx context.Context, p *NWCParams, relay *nostr.Relay) {
 	p.Logger.Info().Str("event_id", ev.ID.Hex()).Msg("published info event")
 }
 
-func StartListener(ctx context.Context, db *gorm.DB, p *NWCParams, user NWCUser, pool *nostr.Pool, requests chan<- RequestEvent, responses chan<- ResponseEvent) {
-	p.Logger.Info().Str("user", user.Name).Msg("start event worker")
+func SubscribeRelay(ctx context.Context, p *NWCParams, user NWCUser,
+	relay *nostr.Relay) (*nostr.Subscription, error) {
 
 	pubkey, err := nostr.PubKeyFromHex(user.NWCPubKey)
 	if err != nil {
-		p.Logger.Warn().Err(err).Msg("malformed pubkey")
-		return
+		p.Logger.Fatal().Err(err).Msg("malformed pubkey")
 	}
 
 	filter := nostr.Filter{
@@ -589,56 +606,88 @@ func StartListener(ctx context.Context, db *gorm.DB, p *NWCParams, user NWCUser,
 		Limit:   1000,
 	}
 
-	options := nostr.SubscriptionOptions{}
-
-	events, eosed := pool.SubscribeManyNotifyEOSE(ctx, []string{user.Relay}, filter, options)
-
 	p.Logger.Info().Str("user", user.Name).Str("relay", user.Relay).Str("pubkey", pubkey.Hex()).Msg("waiting for events")
 
-	for evt := range events {
-		p.Logger.Info().Str("user", user.Name).Str("event_id", evt.ID.Hex()).Msg("received event")
+	sub, err := relay.Subscribe(ctx, filter, nostr.SubscriptionOptions{})
 
-		revent, nip47err := HandleEvent(db, p, &user, evt.Event)
+	return sub, err
+}
 
-		if revent != nil && nip47err == nil {
+func EnsureRelayConnected(ctx context.Context, p *NWCParams, relay *nostr.Relay) bool {
+	if !relay.IsConnected() {
+		interval := 3 * time.Second
 
-			requests <- *revent
+		for {
+			p.Logger.Warn().Str("relay_url", relay.URL).Msg("relay is disconnected, attempting to reconnect")
 
-		} else if (nip47err != nil) {
-			privkey, err := nostr.SecretKeyFromHex(p.PrivateKey)
+			r := nostr.NewRelay(ctx, relay.URL, nostr.RelayOptions{})
+
+			p.Logger.Info().Str("relay_url", relay.URL).Msg("connecting...")
+
+			err := r.Connect(ctx)
+
 			if err != nil {
-				p.Logger.Warn().Err(err).Msg("malformed privkey")
-				continue
+				p.Logger.Warn().Err(err).Int("interval", int(interval)).Msg("unable to connect")
+			} else {
+				p.Logger.Info().Str("relay_url", relay.URL).Msg("connected")
+				*relay = *r
+				break
 			}
 
-			ss, err := nip04.ComputeSharedSecret(evt.PubKey, privkey)
-
-			if ss != nil {
-				response, err := CreateNostrResponse(p, evt.PubKey.Hex(), evt.ID.Hex(), Nip47Response{
-					Error: nip47err,
-				}, nil, ss)
-
-				if response != nil {
-					rsp, _ := CommitResponseEvent(db, p, &user, response, evt.ID.Hex())
-					if rsp != nil {
-						responses <- *rsp
-					}
-				} else if err != nil {
-					p.Logger.Warn().Err(err).Msg("unable to create nostr response")
-				}
-			} else if err != nil {
-				p.Logger.Warn().Err(err).Msg("unable to compute shared secret")
-			}
+			time.Sleep(interval)
+			interval = interval * 17 / 10
 		}
 
-		p.Logger.Info().Str("user", user.Name).Str("event_id", evt.ID.Hex()).Msg("finished event")
+		return true
 	}
 
-	p.Logger.Info().Str("user", user.Name).Msg("waiting eosed")
+	return false
+}
 
-	<-eosed
+func StartListener(
+	ctx context.Context,
+	db *gorm.DB,
+	p *NWCParams,
+	user NWCUser,
+	relay *nostr.Relay,
+	requests chan<- RequestEvent,
+	responses chan<- ResponseEvent) {
 
-	p.Logger.Info().Str("user", user.Name).Msg("end of listener")
+	p.Logger.Info().Str("user", user.Name).Msg("start event worker")
+
+	EnsureRelayConnected(ctx, p, relay)
+	sub, err := SubscribeRelay(ctx, p, user, relay)
+
+	for {
+		if err != nil {
+			p.Logger.Fatal().Err(err).Msg("subscription to relay failed")
+		}
+
+		select {
+		case evt, ok := <-sub.Events:
+			if ok {
+				QueueEvent(db, p, &user, &evt, requests, responses)
+			} else {
+				p.Logger.Info().Str("user", user.Name).Msg("end of events")
+				if (EnsureRelayConnected(ctx, p, relay)) {
+					sub, err = SubscribeRelay(ctx, p, user, relay)
+				}
+			}
+		case <-sub.EndOfStoredEvents:
+			p.Logger.Info().Str("user", user.Name).Msg("end of stored events")
+			if (EnsureRelayConnected(ctx, p, relay)) {
+				sub, err = SubscribeRelay(ctx, p, user, relay)
+			}
+		case <-sub.ClosedReason:
+			p.Logger.Info().Str("user", user.Name).Msg("relay closed")
+			if (EnsureRelayConnected(ctx, p, relay)) {
+				sub, err = SubscribeRelay(ctx, p, user, relay)
+			}
+		case <-ctx.Done():
+			sub.Unsub()
+			return
+		}
+	}
 }
 
 func ExecuteRequestBacklog(ctx context.Context, db *gorm.DB, p *NWCParams, user NWCUser, responses chan<- ResponseEvent) {
@@ -718,12 +767,6 @@ func Start(ctx context.Context, p *NWCParams) {
 
 	InitDB(db, p)
 
-	pctx, _ := context.WithCancelCause(ctx)
-	pool := &nostr.Pool{
-		Relays: xsync.NewMapOf[string, *nostr.Relay](),
-		Context: pctx,
-	}
-
 	for _, user := range p.Users {
 
 		if user.Relay == "" {
@@ -759,7 +802,7 @@ func Start(ctx context.Context, p *NWCParams) {
 
 		p.Logger.Info().Str("pubkey", user.NWCPubKey).Msg("filtering for requests from pubkey")
 
-		go StartListener(ctx, db, p, user, pool, requests, responses)
+		go StartListener(ctx, db, p, user, relay, requests, responses)
 
 		go StartExecuter(ctx, db, p, user, requests, responses)
 
