@@ -5,8 +5,8 @@ import (
 	"os"
 	"net/url"
 
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip19"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
 	"github.com/rs/zerolog"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
@@ -85,61 +85,52 @@ func viewNostrKeys(ctx *cli.Context) error {
 	} else if prefix == "nsec" {
 		fmt.Printf("private hex: %s\n", hex)
 
-		public, err := nostr.GetPublicKey(hex.(string))
-
+		privkey, err := nostr.SecretKeyFromHex(hex.(string))
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("public hex: %s\n", public)
+		public := nostr.GetPublicKey(privkey)
 
-		pub, err := nip19.EncodePublicKey(public)
+		fmt.Printf("public hex: %s\n", public.Hex())
 
-		if err != nil {
-			return err
-		}
+		npub := nip19.EncodeNpub(public)
 
-		fmt.Printf("npub: %s\n", pub)
+		fmt.Printf("npub: %s\n", npub)
 
 		return nil
 	}
 
 	if privatehex != "" {
-		priv, err := nip19.EncodePrivateKey(privatehex)
-
+		privkey, err := nostr.SecretKeyFromHex(privatehex)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("nsec: %s\n", priv)
+		nsec := nip19.EncodeNsec(privkey)
 
-		public, err := nostr.GetPublicKey(privatehex)
+		fmt.Printf("nsec: %s\n", nsec)
 
-		if err != nil {
-			return err
-		}
+		public := nostr.GetPublicKey(privkey)
 
-		fmt.Printf("public hex: %s\n", public)
+		fmt.Printf("public hex: %s\n", public.Hex())
 
-		pub, err := nip19.EncodePublicKey(public)
+		npub := nip19.EncodeNpub(public)
 
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("npub: %s\n", pub)
+		fmt.Printf("npub: %s\n", npub)
 
 		return nil
 	}
 
 	if publichex != "" {
-		pub, err := nip19.EncodePublicKey(publichex)
-
+		pubkey, err := nostr.PubKeyFromHex(publichex)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("npub: %s\n", pub)
+		npub := nip19.EncodeNpub(pubkey)
+
+		fmt.Printf("npub: %s\n", npub)
 
 		return nil
 	}
@@ -148,24 +139,11 @@ func viewNostrKeys(ctx *cli.Context) error {
 }
 
 func createNostrKeys(ctx *cli.Context) error {
-	privatekey := nostr.GeneratePrivateKey()
-	publickey, err := nostr.GetPublicKey(privatekey)
+	privatekey := nostr.Generate()
+	publickey := nostr.GetPublicKey(privatekey)
 
-	if err != nil {
-		return err
-	}
-
-	nsec, err := nip19.EncodePrivateKey(privatekey)
-
-	if err != nil {
-		return err
-	}
-
-	npub, err := nip19.EncodePublicKey(publickey)
-
-	if err != nil {
-		return err
-	}
+	nsec := nip19.EncodeNsec(privatekey)
+	npub := nip19.EncodeNpub(publickey)
 
 	fmt.Printf("nsec: %s\n", nsec)
 	fmt.Printf("npub: %s\n", npub)
@@ -176,9 +154,9 @@ func createNostrKeys(ctx *cli.Context) error {
 }
 
 func createSecret(ctx *cli.Context) error {
-	privatekey := nostr.GeneratePrivateKey()
+	privatekey := nostr.Generate()
 
-	fmt.Printf("secret: %s\n", privatekey)
+	fmt.Printf("secret: %s\n", privatekey.Hex())
 
 	return nil
 }
@@ -191,10 +169,13 @@ func connectQRCode(ctx *cli.Context) error {
 	user, ok := userMap[username]
 
 	if ok {
-		pubkey, err := nostr.GetPublicKey(s.NostrPrivateKey)
+		privkey, err := nostr.SecretKeyFromHex(s.NostrPrivateKey)
 		if err != nil {
-			log.Fatal().Err(err).Msg("unable to get pubkey")
+			log.Fatal().Err(err).Msg("unable to read private key")
+			return err
 		}
+
+		pubkey := nostr.GetPublicKey(privkey)
 
 		if user.NWCRelay == "" {
 			log.Fatal().Err(err).Msg("missing relay")
@@ -208,7 +189,7 @@ func connectQRCode(ctx *cli.Context) error {
 		params.Add("relay", user.NWCRelay)
 		params.Add("secret", user.NWCSecret)
 
-		connect := "nostr+walletconnect://"+pubkey+"?"+params.Encode()
+		connect := "nostr+walletconnect://"+pubkey.Hex()+"?"+params.Encode()
 
 		qrterminal.Generate(connect, qrterminal.M, os.Stdout)
 	} else {
@@ -226,10 +207,13 @@ func connectString(ctx *cli.Context) error {
 	user, ok := userMap[username]
 
 	if ok {
-		pubkey, err := nostr.GetPublicKey(s.NostrPrivateKey)
+		privkey, err := nostr.SecretKeyFromHex(s.NostrPrivateKey)
 		if err != nil {
-			log.Fatal().Err(err).Msg("unable to get pubkey")
+			log.Fatal().Err(err).Msg("unable to read private key")
+			return err
 		}
+
+		pubkey := nostr.GetPublicKey(privkey)
 
 		if user.NWCRelay == "" {
 			log.Fatal().Err(err).Msg("missing relay")
@@ -243,7 +227,7 @@ func connectString(ctx *cli.Context) error {
 		params.Add("relay", user.NWCRelay)
 		params.Add("secret", user.NWCSecret)
 
-		fmt.Println("nostr+walletconnect://"+pubkey+"?"+params.Encode())
+		fmt.Println("nostr+walletconnect://"+pubkey.Hex()+"?"+params.Encode())
 	} else {
 		log.Fatal().Msg("no user")
 	}
