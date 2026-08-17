@@ -291,7 +291,7 @@ func (b *PhoenixBackend) makeInvoice(params Nip47InvoiceParams) (*PhoenixInvoice
 		payload.Set("description", params.Description)
 	}
 
-	// TODO use params.Expiry
+	payload.Add("expirySeconds", fmt.Sprintf("%d", params.Expiry))
 
 	payload.Add("amountSat", fmt.Sprintf("%d", params.Amount/1000))
 
