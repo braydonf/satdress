@@ -2,6 +2,7 @@
 *.swo
 *.yaml
 *.env
+*.~
 satdress
 satdress-cli
 config.yml
