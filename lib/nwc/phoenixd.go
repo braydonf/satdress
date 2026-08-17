@@ -189,98 +189,111 @@ func (b *PhoenixBackend) getBalance() (uint64, error) {
 }
 
 func (b *PhoenixBackend) lookupInvoice(paymentHash string) (*PhoenixLookupInvoiceResult, error) {
-    // Try to find the invoice in incoming payments first
-    result, err := b.lookupIncomingInvoice(paymentHash)
-    if err != nil {
-        if result == nil && err.Error() == "not found" {
-            return b.lookupOutgoingInvoice(paymentHash)
-        }
-        return nil, err
-    } else if result != nil {
-        return result, nil
-    }
+	result, err := b.lookupIncomingInvoice(paymentHash)
+	if result == nil && err == nil {
+		return b.lookupOutgoingInvoice(paymentHash)
+	} else if err != nil {
+		return nil, err
+	}
 
-    return nil, fmt.Errorf("unexpected error in lookupInvoice")
+	return result, nil
 }
 
 func (b *PhoenixBackend) lookupIncomingInvoice(paymentHash string) (*PhoenixLookupInvoiceResult, error) {
-    url := "http://" + b.Host + "/payments/incoming/" + paymentHash
-    req, err := http.NewRequest("GET", url, nil)
-    if err != nil {
-        return nil, err
-    }
+	client := &http.Client{}
+	req, err := http.NewRequest(
+		"GET",
+		"http://"+b.Host+"/payments/incoming/"+paymentHash,
+		nil,
+	)
 
-	keyb64 := base64.StdEncoding.EncodeToString([]byte("phoenix-cli:" + b.Key))
-    req.Header.Add("Authorization", "Basic " + keyb64)
+	if err != nil {
+		return nil, err
+	}
 
-    client := &http.Client{}
-    res, err := client.Do(req)
-    if err != nil {
-        return nil, err
-    }
-    defer res.Body.Close()
+	keyb64 := base64.StdEncoding.EncodeToString([]byte("phoenix-cli:"+b.Key))
 
-    if res.StatusCode == 404 {
-        return nil, fmt.Errorf("not found")
-    } else if res.StatusCode >= 400 {
-        body, _ := io.ReadAll(res.Body)
-        return nil, fmt.Errorf("HTTP error %d: %s", res.StatusCode, string(body))
-    }
+	req.Header.Add("Authorization", "Basic "+keyb64)
 
-    var result PhoenixLookupInvoiceResult
-    if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-        return nil, err
-    }
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
 
-    return &result, nil
+	if res.StatusCode == 404 {
+		return nil, nil
+	} else if res.StatusCode >= 400 {
+		body, _ := io.ReadAll(res.Body)
+		text := string(body)
+		if len(text) > 300 {
+			text = text[:300]
+		}
+		return nil, fmt.Errorf("call to phoenix failed (%d): %s", res.StatusCode, text)
+	}
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result = PhoenixLookupInvoiceResult{}
+
+	err = json.Unmarshal([]byte(body), &result)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &result, nil
 }
 
 func (b *PhoenixBackend) lookupOutgoingInvoice(paymentHash string) (*PhoenixLookupInvoiceResult, error) {
-    client := &http.Client{}
-    req, err := http.NewRequest("GET", "http://"+b.Host+"/payments/outgoing", nil)
-    if err != nil {
-        return nil, err
-    }
+	client := &http.Client{}
+	req, err := http.NewRequest(
+		"GET",
+		"http://"+b.Host+"/payments/outgoingbyhash/"+paymentHash,
+		nil,
+	)
 
-    keyb64 := base64.StdEncoding.EncodeToString([]byte("phoenix-cli:" + b.Key))
-    req.Header.Add("Authorization", "Basic " + keyb64)
+	if err != nil {
+		return nil, err
+	}
 
-    res, err := client.Do(req)
-    if err != nil {
-        return nil, err
-    }
-    defer res.Body.Close()
+	keyb64 := base64.StdEncoding.EncodeToString([]byte("phoenix-cli:"+b.Key))
 
-    if res.StatusCode >= 300 {
-        body, _ := io.ReadAll(res.Body)
-        text := string(body)
-        if len(text) > 300 {
-            text = text[:300]
-        }
-        return nil, fmt.Errorf("call to phoenix failed (%d): %s", res.StatusCode, text)
-    }
+	req.Header.Add("Authorization", "Basic "+keyb64)
 
-    body, err := io.ReadAll(res.Body)
-    if err != nil {
-        return nil, err
-    }
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
 
-    var payments []PhoenixLookupInvoiceResult
-    err = json.Unmarshal(body, &payments)
-    if err != nil {
-        return nil, err
-    }
+	if res.StatusCode == 404 {
+		return nil, nil
+	} else if res.StatusCode >= 400 {
+		body, _ := io.ReadAll(res.Body)
+		text := string(body)
+		if len(text) > 300 {
+			text = text[:300]
+		}
+		return nil, fmt.Errorf("call to phoenix failed (%d): %s", res.StatusCode, text)
+	}
 
-    for _, payment := range payments {
-        if payment.PaymentHash == paymentHash {
-            return &payment, nil
-        }
-    }
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
 
-    // Not found
-    return nil, nil
+	var result = PhoenixLookupInvoiceResult{}
+	err = json.Unmarshal([]byte(body), &result)
+	if err != nil {
+		return nil, err
+	}
+
+	return &result, nil
 }
-
 
 func (b *PhoenixBackend) makeInvoice(params Nip47InvoiceParams) (*PhoenixInvoiceResult, error) {
 	payload := url.Values{}
