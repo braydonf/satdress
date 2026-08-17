@@ -34,6 +34,7 @@ users:
     key: <hex>
     nwcsecret: <32-byte-hex>
     nwcrelay: <wss://host>
+    nwclocalrelay: <ws://host:port>
 
   - name: alice
     kind: commando

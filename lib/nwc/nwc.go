@@ -162,6 +162,7 @@ type NWCUser struct {
 	NWCSecret string
 	NWCPubKey string
 	Relay string
+	LocalRelay string
 	Kind string
 	Key string
 	Host string
@@ -606,7 +607,7 @@ func SubscribeRelay(ctx context.Context, p *NWCParams, user NWCUser,
 		Limit:   1000,
 	}
 
-	p.Logger.Info().Str("user", user.Name).Str("relay", user.Relay).Str("pubkey", pubkey.Hex()).Msg("waiting for events")
+	p.Logger.Info().Str("user", user.Name).Str("relay", relay.URL).Str("pubkey", pubkey.Hex()).Msg("waiting for events")
 
 	sub, err := relay.Subscribe(ctx, filter, nostr.SubscriptionOptions{})
 
@@ -778,7 +779,13 @@ func Start(ctx context.Context, p *NWCParams) {
 
 		options := nostr.RelayOptions{}
 
-		relay := nostr.NewRelay(ctx, user.Relay, options)
+		relayUrl := user.Relay
+
+		if user.LocalRelay != "" {
+			relayUrl = user.LocalRelay
+		}
+
+		relay := nostr.NewRelay(ctx, relayUrl, options)
 		err := relay.Connect(ctx)
 
 		if err != nil {

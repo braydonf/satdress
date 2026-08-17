@@ -69,6 +69,7 @@ type User struct {
 	Rune string `koanf:"rune"`
 	NWCSecret string `koanf:"nwcsecret"`
 	NWCRelay string `koanf:"nwcrelay"`
+	NWCLocalRelay string `koanf:"nwclocalrelay"`
 }
 
 type Settings struct {
@@ -288,6 +289,7 @@ func main() {
 			nwcParams.Users[i].NWCSecret = user.NWCSecret
 			nwcParams.Users[i].NWCPubKey = nwcPubkey.Hex()
 			nwcParams.Users[i].Relay = user.NWCRelay
+			nwcParams.Users[i].LocalRelay = user.NWCLocalRelay
 			nwcParams.Users[i].Kind = user.Kind
 			nwcParams.Users[i].Key = user.Key
 			nwcParams.Users[i].Host = user.Host
