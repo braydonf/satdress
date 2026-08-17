@@ -66,6 +66,7 @@ type PhoenixInvoiceResult struct {
 type PhoenixGetInfoResult struct {
 	NodeId string `json:"nodeId"`
 	// TODO channels
+	BlockHeight uint `json:"blockHeight"`
 	Chain string `json:"chain"`
 	Version string `json:"version"`
 }
@@ -843,7 +844,7 @@ func (b *PhoenixBackend) HandleGetInfo(ctx context.Context, nip47req Nip47Reques
 			//Color: nil,
 			//PubKey: nil,
 			Network: result.Chain, // mainnet, testnet, signet, or regtest
-			//BlockHeight: nil,
+			BlockHeight: result.BlockHeight,
 			//BlockHash: nil,
 			Methods: strings.Split(NIP47_CAPABILITIES, " "),
 		},
