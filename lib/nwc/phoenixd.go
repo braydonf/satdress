@@ -69,6 +69,8 @@ type PhoenixGetInfoResult struct {
 	BlockHeight uint `json:"blockHeight"`
 	Chain string `json:"chain"`
 	Version string `json:"version"`
+	// TODO extensions
+	// https://github.com/nostr-protocol/nips/blob/master/47.md#get_info
 }
 
 type Backend interface {
@@ -646,6 +648,13 @@ func (b *PhoenixBackend) HandleLookupInvoice(ctx context.Context, nip47req Nip47
 }
 
 func (b *PhoenixBackend) HandleListTransactions(ctx context.Context, nip47req Nip47Request) (*Nip47Response, *Nip47Error) {
+	// TODO Full transaction history
+	// https://github.com/nostr-wallet-connect/nwc/blob/main/05.md
+	// https://github.com/ACINQ/phoenixd/blob/master/src/commonMain/kotlin/fr/acinq/phoenixd/Api.kt
+	// - Sync new incoming and outgoing payments to NWC database
+	// - Query NWC database to support combining both incoming
+	//   and outgoing w/ offset, from, to, limit
+
 	var params Nip47ListTransactionsParams
 
 	err := json.Unmarshal(nip47req.Params, &params)

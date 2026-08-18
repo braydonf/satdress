@@ -44,6 +44,9 @@ const (
 	NIP47_NOTIFICATION_TYPES         = "payment_received" // payment_received, balance_updated, payment_sent, channel_opened, channel_closed
 )
 
+// TODO NWC-02 Send notifications:
+// https://github.com/nostr-wallet-connect/nwc/blob/main/02.md
+
 const (
 	REQUEST_EVENT_STATUS_RECEIVED = "received"
 	REQUEST_EVENT_STATUS_RUNNING = "running"
@@ -256,6 +259,9 @@ func CreateNostrResponse(p *NWCParams, refPubKey string, refID string, content i
 
 	p.Logger.Trace().Str("content", string(payloadBytes)).Msg("creating nostr response")
 
+	// TODO Support nip44_v2 encryption:
+	// https://github.com/nostr-protocol/nips/blob/master/47.md#encryption
+
 	msg, err := nip04.Encrypt(string(payloadBytes), ss)
 	if err != nil {
 		return nil, err
@@ -374,6 +380,9 @@ func ExecuteRequest(ctx context.Context, db *gorm.DB, p *NWCParams, user *NWCUse
 	default:
 		nip47Resp, nip47Err = backend.HandleUnknownMethod(ctx, *nip47Request)
 	}
+
+	// TODO NWC-321
+	// https://github.com/nostr-wallet-connect/nwc/blob/main/321.md
 
 	var nostrResp *nostr.Event
 
